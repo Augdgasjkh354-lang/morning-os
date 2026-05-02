@@ -19,5 +19,13 @@
   "wiki_enabled": true,
   "weekly_report_enabled": true,
   "markdown_export": true,
-  "weekly_prompt": "你是一位宏观分析师，请对过去一周的晨报内容做横向分析，提炼本周核心趋势、值得关注的变化和下周展望，语言简练，带有分析视角。"
+  "weekly_prompt": "你是一位宏观分析师，请对过去一周的晨报内容做横向分析，提炼本周核心趋势、值得关注的变化和下周展望，语言简练，带有分析视角。",
+  "chat_system_prompt": "专注于宏观分析、地缘政治、前沿AI领域的深度探讨。",
+  "profile": {
+    "nickname": "",
+    "status": "",
+    "interests": "",
+    "thinking_style": "",
+    "custom_instruction": ""
+  }
 }
