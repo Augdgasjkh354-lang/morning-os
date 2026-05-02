@@ -11,5 +11,13 @@
   "news_category": "general",
   "wiki_topic": "人工智能",
   "report_style": "分析型",
-  "system_prompt": "你是一位专业的宏观分析师。请将以下原始数据整合为一份简洁的中文晨报，风格理性、带有分析视角。每个板块保持独立，语言简练不废话。"
+  "system_prompt": "你是一位专业的宏观分析师。请将以下原始数据整合为一份简洁的中文晨报，风格理性、带有分析视角。每个板块保持独立，语言简练不废话。",
+  "weather_enabled": true,
+  "exchange_enabled": true,
+  "gold_enabled": true,
+  "news_enabled": true,
+  "wiki_enabled": true,
+  "weekly_report_enabled": true,
+  "markdown_export": true,
+  "weekly_prompt": "你是一位宏观分析师，请对过去一周的晨报内容做横向分析，提炼本周核心趋势、值得关注的变化和下周展望，语言简练，带有分析视角。"
 }
