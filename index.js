@@ -1,117 +1,27 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
-const { randomUUID } = require('crypto');
+const cors = require('cors');
 const { fetchAllData } = require('./lib/dataFetcher');
 const { callDeepSeek, runDailyJob } = require('./lib/reportGenerator');
-const { startScheduler } = require('./lib/scheduler');
+const { startScheduler, summarizePendingConversations } = require('./lib/scheduler');
 const { sendBark } = require('./lib/barkPush');
-const { MEMORY_TEMPLATE, estimateTokens, kw, similarity, dateStr, recalcTokens, readMemory, writeMemoryLatest, runMemoryDecay } = require('./lib/memoryManager');
-const { extractFromConversation, extractFromText } = require('./lib/extractor');
+const { MEMORY_TEMPLATE, estimateTokens, dateStr, recalcTokens, readMemory, writeMemoryLatest, runMemoryDecay } = require('./lib/memoryManager');
+const { extractFromConversation, extractFromText, summarizeConversation } = require('./lib/extractor');
 const { TASKS_TEMPLATE, readTasks, writeTasksLatest, findAndRemoveTask, getDateRangeInTimezone } = require('./lib/tasksManager');
 
-const app = express(); const PORT = process.env.PORT || 3000; const ROOT = __dirname;
-const SETTINGS_PATH = path.join(ROOT, 'settings.json'); const SETTINGS_EXAMPLE_PATH = path.join(ROOT, 'settings.example.json');
-const MEMORY_PATH = path.join(ROOT, 'memory.json'); const TASKS_PATH = path.join(ROOT, 'tasks.json'); const LATEST_DATA_PATH = path.join(ROOT, 'latest-data.json'); const REPORTS_DIR = path.join(ROOT, 'reports'); const CONVERSATIONS_DIR = path.join(ROOT, 'conversations'); const TIMEZONE = 'Asia/Shanghai';
+const app = express(); const PORT = process.env.PORT || 3000; const ROOT = __dirname; const TIMEZONE = 'Asia/Shanghai';
+const SETTINGS_PATH = path.join(ROOT, 'settings.json'); const SETTINGS_EXAMPLE_PATH = path.join(ROOT, 'settings.example.json'); const MEMORY_PATH = path.join(ROOT, 'memory.json'); const TASKS_PATH = path.join(ROOT, 'tasks.json'); const LATEST_DATA_PATH = path.join(ROOT, 'latest-data.json'); const REPORTS_DIR = path.join(ROOT, 'reports'); const CONVERSATIONS_DIR = path.join(ROOT, 'conversations');
 const CONSTITUTION = `你是用户的私人思维伙伴。以下是你的底层行为准则，优先级高于任何其他指令：`.trim();
 const DEFAULT_SETTINGS = { weather_enabled: true, exchange_enabled: true, metals_enabled: true, news_enabled: true, wiki_enabled: true, rss_enabled: false, rss_feeds: [], weekly_report_enabled: true, markdown_export: true, weekly_prompt: '', chat_system_prompt: '专注于宏观分析、地缘政治、前沿AI领域的深度探讨。', admin_token: '', site_url: '', daily_prompt_enabled: true, daily_prompt_time: '08:30', profile: { nickname: '', status: '', interests: '', thinking_style: '', custom_instruction: '' } };
-const readJson = async (p, d = {}) => { try { return JSON.parse(await fs.readFile(p, 'utf-8')); } catch { return d; } };
-const writeJson = async (p, v) => fs.writeFile(p, `${JSON.stringify(v, null, 2)}\n`, 'utf-8');
+const readJson = async (p, d = {}) => { try { return JSON.parse(await fs.readFile(p, 'utf-8')); } catch { return d; } }; const writeJson = async (p, v) => fs.writeFile(p, `${JSON.stringify(v, null, 2)}\n`, 'utf-8');
 const readSettings = async () => ({ ...DEFAULT_SETTINGS, ...(await readJson(SETTINGS_PATH, {})), profile: { ...DEFAULT_SETTINGS.profile, ...((await readJson(SETTINGS_PATH, {})).profile || {}) } });
-
-function getSafeSettings(settings) {
-  const {
-    deepseek_api_key,
-    news_api_key,
-    openweather_api_key,
-    exchangerate_api_key,
-    gold_api_key,
-    bark_token,
-    admin_token,
-    ...safe
-  } = settings || {};
-  return safe;
-}
-
-function maskKey(v) {
-  if (!v) return '';
-  return `${String(v).slice(0, 4)}****`;
-}
-
-app.use(express.json()); app.use(express.static(path.join(ROOT, 'public')));
-
-async function ensureBaseFiles() {
-  await fs.mkdir(REPORTS_DIR, { recursive: true }); await fs.mkdir(CONVERSATIONS_DIR, { recursive: true });
-  try { await fs.access(SETTINGS_PATH); } catch { await fs.copyFile(SETTINGS_EXAMPLE_PATH, SETTINGS_PATH); console.log('已创建默认配置文件，请前往 /admin 填写API Key'); }
-  try { await fs.access(MEMORY_PATH); } catch { await writeJson(MEMORY_PATH, MEMORY_TEMPLATE); }
-  try { await fs.access(LATEST_DATA_PATH); } catch { await fs.writeFile(LATEST_DATA_PATH, JSON.stringify({}, null, 2)); }
-  try { await fs.access(TASKS_PATH); } catch { await writeJson(TASKS_PATH, TASKS_TEMPLATE); }
-}
+function getSafeSettings(settings){ const { deepseek_api_key, news_api_key, openweather_api_key, exchangerate_api_key, gold_api_key, bark_token, admin_token, ...safe }=settings||{}; return safe; }
+function maskKey(v){ if(!v) return ''; return `${String(v).slice(0,4)}****`; }
+app.use(cors()); app.use(express.json()); app.use(express.static(path.join(ROOT, 'public')));
 async function requireAuth(req, res, next) { const s = await readSettings(); const expected = s.admin_token || ''; if (!expected) return next(); const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, ''); const token = auth || req.query.token || ''; if (token !== expected) return res.status(401).json({ error: '未授权' }); next(); }
-
-app.get('/api/settings', requireAuth, async (req, res) => {
-  const settings = await readSettings();
-  const safe = getSafeSettings(settings);
-  res.json({ ...safe, deepseek_api_key: maskKey(settings.deepseek_api_key), news_api_key: maskKey(settings.news_api_key), openweather_api_key: maskKey(settings.openweather_api_key), exchangerate_api_key: maskKey(settings.exchangerate_api_key), gold_api_key: maskKey(settings.gold_api_key), bark_token: maskKey(settings.bark_token) });
-});
-app.post('/api/settings', requireAuth, async (req, res) => { const current = await readSettings(); const incoming = { ...(req.body || {}) }; delete incoming.admin_token; await writeJson(SETTINGS_PATH, { ...current, ...incoming, admin_token: current.admin_token || '', profile: { ...current.profile, ...((incoming || {}).profile || {}) } }); res.json({ success: true }); });
-app.post('/api/admin-token', requireAuth, async (req, res) => { const current = await readSettings(); const token = String((req.body || {}).token || ''); await writeJson(SETTINGS_PATH, { ...current, admin_token: token, profile: { ...current.profile } }); res.json({ success: true }); });
-app.get('/api/latest-data', async (req, res) => { try { const latest = await readJson(LATEST_DATA_PATH, {}); if (latest.settings) latest.settings = getSafeSettings(latest.settings); res.json(latest); } catch { res.json({ empty: true }); } });
-app.get('/report', async (req, res) => { const files = (await fs.readdir(REPORTS_DIR).catch(() => [])).filter((f) => f.endsWith('.html')).sort(); if (!files.length) return res.send('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body>暂无报告，将在今日09:00自动生成</body></html>'); res.send(await fs.readFile(path.join(REPORTS_DIR, files.at(-1)), 'utf-8')); });
-app.get('/trigger', requireAuth, async (req, res) => { runDailyJob({ readSettings, fetchAllData, writeJson, latestDataPath: LATEST_DATA_PATH, conversationsDir: CONVERSATIONS_DIR, reportsDir: REPORTS_DIR, dateStr: () => dateStr(TIMEZONE), CONSTITUTION, readTasks: () => readTasks(TASKS_PATH, readJson) }).catch((e) => console.log('手动触发失败：', e.message)); res.json({ success: true, message: '报告生成中，请稍后访问 /report 查看' }); });
-
-app.get('/api/memory', async (req, res) => res.json(await readMemory(MEMORY_PATH, readJson, TIMEZONE)));
-app.post('/api/memory', requireAuth, async (req, res) => { const body = req.body || {}; const type = body.type || 'knowledge'; await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { const item = { id: randomUUID(), title: body.title || '未命名', content: body.content || '', source: body.source || '手动', tags: body.tags || [], type, date_created: dateStr(TIMEZONE), date_updated: dateStr(TIMEZONE), importance: body.importance || 5, tokens: estimateTokens(body.content || ''), decay_score: type === 'identity' ? 10 : (body.decay_score ?? 10), related_ids: [], history: [], conflict: false }; m[type].push(item); recalcTokens(m); if (m.meta.total_tokens > m.meta.soft_limit) { const s = await readSettings(); await sendBark(s.bark_token, '记忆库已达软上限，建议进行AI修剪'); } return m; }); res.json({ success: true }); });
-app.put('/api/memory/:id', requireAuth, async (req, res) => { await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const t of ['identity', 'knowledge', 'inference', 'archive']) m[t] = m[t].map((i) => i.id === req.params.id ? { ...i, ...req.body, date_updated: dateStr(TIMEZONE) } : i); recalcTokens(m); return m; }); res.json({ success: true }); });
-app.delete('/api/memory/:id', requireAuth, async (req, res) => { await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const t of ['identity', 'knowledge', 'inference', 'archive']) m[t] = m[t].filter((x) => x.id !== req.params.id); recalcTokens(m); return m; }); res.json({ success: true }); });
-app.post('/api/memory/archive/:id', requireAuth, async (req, res) => { await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const t of ['identity', 'knowledge', 'inference']) { const idx = m[t].findIndex((x) => x.id === req.params.id); if (idx >= 0) { const [item] = m[t].splice(idx, 1); m.archive.push({ ...item, type: item.type || t, date_updated: dateStr(TIMEZONE) }); break; } } recalcTokens(m); return m; }); res.json({ success: true }); });
-app.post('/api/memory/restore/:id', requireAuth, async (req, res) => { await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { const idx = m.archive.findIndex((x) => x.id === req.params.id); if (idx >= 0) { const [item] = m.archive.splice(idx, 1); const t = ['identity', 'knowledge', 'inference'].includes(item.type) ? item.type : 'knowledge'; m[t].push({ ...item, type: t, date_updated: dateStr(TIMEZONE) }); } recalcTokens(m); return m; }); res.json({ success: true }); });
-app.post('/api/memory/resolve-conflict', requireAuth, async (req, res) => { let updated = null; const { id, action } = req.body || {}; await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const t of ['knowledge', 'inference']) { m[t] = m[t].map((item) => { if (item.id !== id) return item; const oldContent = (item.history || []).at(-1)?.content || ''; if (action === 'keep_old') updated = { ...item, content: oldContent || item.content, conflict: false, date_updated: dateStr(TIMEZONE) }; else if (action === 'merge') updated = { ...item, content: `${item.content || ''}\n${oldContent || ''}`.trim(), conflict: false, date_updated: dateStr(TIMEZONE) }; else updated = { ...item, conflict: false, date_updated: dateStr(TIMEZONE) }; return updated; }); } recalcTokens(m); return m; }); res.json({ success: true, memory: updated }); });
-app.post('/api/memory/feedback', requireAuth, async (req, res) => { const { id, action } = req.body || {}; await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const t of ['identity', 'knowledge', 'inference']) { m[t] = (m[t] || []).map((x) => { if (x.id !== id) return x; const next = { ...x }; if (action === 'irrelevant') next.importance = Math.max(1, (next.importance || 5) - 1); if (action === 'downvote') next.importance = Math.max(1, (next.importance || 5) - 2); if (action === 'upvote') { next.importance = Math.min(10, (next.importance || 5) + 1); next.confidence = Math.min(1, (next.confidence || 0.7) + 0.05); } next.date_updated = new Date().toISOString(); return next; }); } return m; }); res.json({ success: true }); });
-app.post('/api/memory/prune', requireAuth, async (req, res) => {
-  const settings = await readSettings(); const memory = await readMemory(MEMORY_PATH, readJson, TIMEZONE);
-  const candidates = [...memory.identity, ...memory.knowledge, ...memory.inference];
-  const prompt = "你是记忆修剪助手。请分析记忆数组并给出建议。严格返回JSON：{\"suggestions\":[{\"id\":\"\",\"action\":\"archive|merge|lower_confidence\",\"reason\":\"\",\"merge_with\":\"\"}]}";
-  let raw = '{"suggestions":[]}'; try { raw = await callDeepSeek(settings, [{ role: 'system', content: prompt }, { role: 'user', content: JSON.stringify(candidates) }]); } catch (e) { console.log('记忆修剪建议生成失败：', e.message); }
-  let parsed = { suggestions: [] }; try { parsed = JSON.parse(raw); } catch {}
-  res.json({ status: 'done', suggestions: parsed.suggestions || [] });
-});
-app.get('/api/memory/import-report', requireAuth, async (req, res) => res.json({ success: true }));
-
-app.get('/api/conversations', async (req, res) => { const files = (await fs.readdir(CONVERSATIONS_DIR).catch(() => [])).filter((f) => f.endsWith('.json')); const list = []; for (const f of files) { const c = await readJson(path.join(CONVERSATIONS_DIR, f), {}); const um = (c.messages || []).find((x) => x.role === 'user'); list.push({ id: f.replace('.json', ''), title: String(um?.content || '未命名对话').slice(0, 20), updated_at: c.updated_at || '' }); } list.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0)); res.json(list); });
-app.get('/api/conversations/:id', async (req, res) => { const p = path.join(CONVERSATIONS_DIR, `${req.params.id}.json`); try { await fs.access(p); res.json(await readJson(p, {})); } catch { res.status(404).json({ error: '对话不存在' }); } });
-app.post('/api/chat', requireAuth, async (req, res) => { const { message, conversation_id } = req.body || {}; const settings = await readSettings(); const id = conversation_id || randomUUID(); const cpath = path.join(CONVERSATIONS_DIR, `${id}.json`); const conv = await readJson(cpath, { id, messages: [], memory_summary_pending: false, memory_summary_count: 0, last_summarized_at: null }); const profile = settings.profile || {}; const profileLines = []; if (profile.nickname) profileLines.push(`昵称：${profile.nickname}`); if (profile.status) profileLines.push(`状态：${profile.status}`); if (profile.interests) profileLines.push(`兴趣：${profile.interests}`); if (profile.thinking_style) profileLines.push(`思维偏好：${profile.thinking_style}`); if (profile.custom_instruction) profileLines.push(`自定义指令：${profile.custom_instruction}`); const profileSection = profileLines.length ? `【用户画像】\n${profileLines.join('\n')}` : ''; const stopWords = new Set(['的', '了', '是', '在', '我', '你', '他', '她', '它', '我们', '你们', '他们', '和', '与', '及', '就', '都', '而', '及其', '一个']); const keywords = String(message || '').split(/[\s,，。！？!?:：;；、()（）\[\]{}<>《》"'“”‘’\n\r\t]+/).map((x) => x.trim()).filter((x) => x && !stopWords.has(x)).slice(0, 10); const memory = await readMemory(MEMORY_PATH, readJson, TIMEZONE); const identityItems = memory.identity || []; const maxUse = Math.max(1, ...[...memory.knowledge, ...memory.inference].map((x) => x.use_count || 0)); const scored = []; for (const type of ['knowledge', 'inference']) { for (const item of memory[type] || []) { const text = `${item.title || ''} ${item.content || ''}`; const keywordHits = keywords.filter((k) => text.includes(k)).length; const tagHits = keywords.filter((k) => (item.tags || []).join(' ').includes(k)).length; const relevance_score = keywordHits * 0.4 + tagHits * 0.3 + ((item.importance || 5) / 10) * 0.2 + ((item.use_count || 0) / maxUse) * 0.1; if (relevance_score > 0) scored.push({ ...item, type, relevance_score }); } } scored.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0)); const topItems = scored.slice(0, 8); const memoryLines = []; for (const item of identityItems) memoryLines.push(`[身份] ${item.content || ''}`); for (const item of topItems) memoryLines.push(`[${item.type === 'knowledge' ? '知识' : '推断'}] ${item.title || '未命名'}：${item.content || ''}`); const memorySection = memoryLines.length ? `【相关记忆】\n${memoryLines.join('\n')}` : ''; const systemParts = [CONSTITUTION, profileSection, memorySection, settings.chat_system_prompt || ''].filter(Boolean); conv.messages.push({ role: 'user', content: message, created_at: new Date().toISOString() }); const ai = await callDeepSeek(settings, [{ role: 'system', content: systemParts.join('\n\n') }, ...conv.messages.map((x) => ({ role: x.role, content: x.content }))]); const usedMemoryIds = [...identityItems.map((i) => i.id), ...topItems.map((i) => i.id)]; conv.messages.push({ role: 'assistant', content: ai, used_memory_ids: usedMemoryIds, created_at: new Date().toISOString() }); conv.updated_at = new Date().toISOString(); const userCount = conv.messages.filter((m) => m.role === 'user').length; const newCount = conv.messages.length; if ((newCount >= 8 && userCount >= 3) || (conv.memory_summary_count || 0) < 3) conv.memory_summary_pending = true; await writeJson(cpath, conv); await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const mid of usedMemoryIds) for (const t of ['identity', 'knowledge', 'inference']) { const it = (m[t] || []).find((x) => x.id === mid); if (it) { it.use_count = (it.use_count || 0) + 1; it.last_used_at = new Date().toISOString(); } } return m; }); res.json({ conversation_id: id, reply: ai, used_memories: [...identityItems.map((i) => ({ id: i.id, title: i.title || '身份记忆', type: 'identity', relevance_score: 1 })), ...topItems.map((i) => ({ id: i.id, title: i.title || '未命名', type: i.type, relevance_score: i.relevance_score || 0 }))] }); });
-app.post('/api/chat/summarize', requireAuth, async (req, res) => {
-  const { conversation_id } = req.body || {}; if (!conversation_id) return res.status(400).json({ error: '缺少conversation_id' });
-  const cpath = path.join(CONVERSATIONS_DIR, `${conversation_id}.json`); const conv = await readJson(cpath, null); if (!conv) return res.status(404).json({ error: '对话不存在' });
-  const settings = await readSettings();
-  const extracted = await extractFromConversation(settings, conv.messages || [], { conversation_id, source_type: 'conversation' });
-  const nowIso = new Date().toISOString();
-  await writeMemoryLatest(MEMORY_PATH, readJson, writeJson, TIMEZONE, async (m) => { for (const item of extracted.memories || []) { const t = item.type; (m[t] || []).push({ ...item, importance: 8, decay_score: 10, use_count: 0, last_used_at: null, expires_at: null, conflict: false, history: [] }); } recalcTokens(m); return m; });
-  await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t) => {
-    for (const item of extracted.tasks || []) { if (item.status === 'todo') t.tasks.push(item); else t.inbox.push(item); }
-    for (const f of extracted.followups || []) t.watch.push(f);
-    return t;
-  });
-  conv.memory_summary_pending = false; conv.memory_summary_count = (conv.memory_summary_count || 0) + 1; conv.last_summarized_at = nowIso;
-  await writeJson(cpath, conv);
-  res.json({ status: 'done', memories: extracted.memories || [], tasks: extracted.tasks || [], followups: extracted.followups || [] });
-});
-
-app.get('/api/chat/summarize', requireAuth, async (req, res) => res.json({ success: true }));
-
-
-app.get('/api/tasks', requireAuth, async (req, res) => res.json(await readTasks(TASKS_PATH, readJson)));
-app.post('/api/tasks', requireAuth, async (req, res) => {
-  const body = req.body || {}; if (!body.title) return res.status(400).json({ error: '缺少title' }); const now = new Date().toISOString();
-  const task = { id: `task_${randomUUID().slice(0, 8)}`, title: body.title, description: body.description || '', status: 'todo', priority: body.priority || 3, due_at: body.due_at || null, source_type: 'manual', source_conversation_id: null, source_message_ids: [], source_report_date: null, related_memory_ids: [], tags: body.tags || [], confidence: 1.0, needs_review: false, checklist: body.checklist || [], created_at: now, updated_at: now };
-  await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t) => { t.tasks.push(task); return t; }); res.json({ success: true, task });
-});
-app.put('/api/tasks/:id', requireAuth, async (req, res) => { let updated = null; await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t) => { for (const k of ['tasks','inbox','watch']) t[k] = t[k].map((x)=> x.id===req.params.id ? (updated={...x,...req.body,updated_at:new Date().toISOString()}) : x); return t; }); if (!updated) return res.status(404).json({ error: '任务不存在' }); res.json({ success:true, task:updated }); });
-app.delete('/api/tasks/:id', requireAuth, async (req, res) => { let ok=false; await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t) => { ok=!!findAndRemoveTask(t, req.params.id); return t;}); if(!ok) return res.status(404).json({error:'任务不存在'}); res.json({success:true}); });
-app.post('/api/tasks/:id/move', requireAuth, async (req,res)=>{ const {status}=req.body||{}; const map={todo:'tasks',inbox:'inbox',watch:'watch',doing:'tasks',done:'tasks',cancelled:'tasks',snoozed:'tasks'}; if(!map[status]) return res.status(400).json({error:'状态无效'}); let moved=null; await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t)=>{ const item=findAndRemoveTask(t, req.params.id); if(item){ moved={...item,status,updated_at:new Date().toISOString()}; t[map[status]].push(moved);} return t;}); if(!moved) return res.status(404).json({error:'任务不存在'}); res.json({success:true,task:moved}); });
-app.post('/api/tasks/extract', requireAuth, async (req,res)=>{ const settings=await readSettings(); const {conversation_id,text}=req.body||{}; if(!conversation_id && !text) return res.status(400).json({error:'缺少参数'}); if(conversation_id){ const conv=await readJson(path.join(CONVERSATIONS_DIR, `${conversation_id}.json`), null); if(!conv) return res.status(404).json({error:'对话不存在'}); return res.json(await extractFromConversation(settings, conv.messages||[], {conversation_id,source_type:'conversation'})); } res.json(await extractFromText(settings, text, {source_type:'manual'})); });
-app.post('/api/tasks/confirm-inbox/:id', requireAuth, async (req,res)=>{ let moved=null; await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t)=>{ const idx=t.inbox.findIndex((x)=>x.id===req.params.id); if(idx>=0){ const [item]=t.inbox.splice(idx,1); moved={...item,status:'todo',needs_review:false,updated_at:new Date().toISOString()}; t.tasks.push(moved);} return t;}); if(!moved) return res.status(404).json({error:'任务不存在'}); res.json({success:true,task:moved}); });
-app.post('/api/tasks/today', requireAuth, async (req,res)=>{ const {title}=req.body||{}; if(!title) return res.status(400).json({error:'缺少title'}); const {end}=getDateRangeInTimezone(TIMEZONE); const now=new Date().toISOString(); let task=null; await writeTasksLatest(TASKS_PATH, readJson, writeJson, async (t)=>{ t.tasks=t.tasks.filter((x)=>!(x.source_type==='daily_prompt' && x.due_at && new Date(x.due_at)>=getDateRangeInTimezone(TIMEZONE).start && new Date(x.due_at)<=getDateRangeInTimezone(TIMEZONE).end)); task={id:`task_${randomUUID().slice(0,8)}`,title,description:'',status:'todo',priority:5,due_at:end.toISOString(),source_type:'daily_prompt',source_conversation_id:null,source_message_ids:[],source_report_date:null,related_memory_ids:[],tags:['今日主任务'],confidence:1,needs_review:false,checklist:[],created_at:now,updated_at:now}; t.tasks.push(task); return t;}); res.json({success:true,task}); });
-app.get('/api/tasks/today', requireAuth, async (req,res)=>{ const data=await readTasks(TASKS_PATH, readJson); const {start,end}=getDateRangeInTimezone(TIMEZONE); const task=data.tasks.find((x)=>x.source_type==='daily_prompt'&&x.due_at&&new Date(x.due_at)>=start&&new Date(x.due_at)<=end)||null; res.json({task}); });
-ensureBaseFiles().then(() => { startScheduler({ timezone: TIMEZONE, runDailyJob: () => runDailyJob({ readSettings, fetchAllData, writeJson, latestDataPath: LATEST_DATA_PATH, conversationsDir: CONVERSATIONS_DIR, reportsDir: REPORTS_DIR, dateStr: () => dateStr(TIMEZONE), CONSTITUTION, readTasks: () => readTasks(TASKS_PATH, readJson) }), readSettings, dailyPromptTask: async (settings) => { if (!settings.bark_token || !settings.site_url) return; await sendBark(settings.bark_token, '今天最重要的一件事是什么？', '点击设置今日主任务', `${settings.site_url.replace(/\/$/, '')}/today.html`); }, decayTask: async () => { console.log('开始执行记忆衰减任务'); await runMemoryDecay(MEMORY_PATH, readJson, writeJson); }, summarizePendingTask: async () => { const files = (await fs.readdir(CONVERSATIONS_DIR).catch(() => [])).filter((f) => f.endsWith('.json')); for (const f of files) { const c = await readJson(path.join(CONVERSATIONS_DIR, f), {}); if (!c.memory_summary_pending) continue; console.log('开始处理待提炼对话：', c.id || f); } } }); app.listen(PORT, () => console.log(`服务已启动，端口：${PORT}`)); });
+(async()=>{ await fs.mkdir(REPORTS_DIR,{recursive:true}); await fs.mkdir(CONVERSATIONS_DIR,{recursive:true}); try{await fs.access(SETTINGS_PATH);}catch{await fs.copyFile(SETTINGS_EXAMPLE_PATH, SETTINGS_PATH); console.log('已创建默认配置文件，请前往 /admin 填写API Key');} try{await fs.access(MEMORY_PATH);}catch{await writeJson(MEMORY_PATH, MEMORY_TEMPLATE);} try{await fs.access(TASKS_PATH);}catch{await writeJson(TASKS_PATH, TASKS_TEMPLATE);} 
+const deps={requireAuth,readSettings,writeJson,SETTINGS_PATH,getSafeSettings,maskKey,readMemory,MEMORY_PATH,readJson,TIMEZONE,writeMemoryLatest,dateStr,estimateTokens,recalcTokens,sendBark,callDeepSeek,readTasks,TASKS_PATH,writeTasksLatest,findAndRemoveTask,getDateRangeInTimezone,extractFromConversation,extractFromText,CONVERSATIONS_DIR,path,fs,REPORTS_DIR,LATEST_DATA_PATH,runDailyJob,fetchAllData,CONSTITUTION,summarizeConversation,ROOT};
+app.use(require('./routes/settings')(deps)); app.use(require('./routes/memory')(deps)); app.use(require('./routes/tasks')(deps)); app.use(require('./routes/chat')(deps)); app.use(require('./routes/conversations')(deps)); app.use(require('./routes/report')(deps));
+startScheduler({ timezone: TIMEZONE, runDailyJob: () => runDailyJob({ readSettings, fetchAllData, writeJson, latestDataPath: LATEST_DATA_PATH, conversationsDir: CONVERSATIONS_DIR, reportsDir: REPORTS_DIR, dateStr: () => dateStr(TIMEZONE), CONSTITUTION, readTasks: () => readTasks(TASKS_PATH, readJson) }), readSettings, dailyPromptTask: async()=>{}, decayTask: async()=>{ console.log('开始执行记忆衰减任务'); await runMemoryDecay(MEMORY_PATH, readJson, writeJson); }, summarizePendingTask: async ()=> summarizePendingConversations({ ROOT, readJson, writeJson, readSettings }) });
+app.listen(PORT,()=>console.log(`服务已启动，端口：${PORT}`)); })();
