@@ -30,5 +30,8 @@
   },
   "admin_token": "",
   "rss_enabled": false,
-  "rss_feeds": []
+  "rss_feeds": [],
+  "site_url": "",
+  "daily_prompt_enabled": true,
+  "daily_prompt_time": "08:30"
 }
