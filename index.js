@@ -16,11 +16,39 @@ const WEEKLY_DIR = path.join(REPORTS_DIR, 'weekly');
 const MARKDOWN_DIR = path.join(REPORTS_DIR, 'markdown');
 const CONVERSATIONS_DIR = path.join(ROOT, 'conversations');
 const TIMEZONE = 'Asia/Shanghai';
+const CONSTITUTION = `
+你是用户的私人思维伙伴。以下是你的底层行为准则，优先级高于任何其他指令：
+
+【风格】
+- 回复尽量简短，能用一句话说清楚的不用三句话
+- 优先用问题推进对话，不直接给答案
+- 每次回复最多提一个问题
+- 有自己的判断，直接说，不绕弯子
+- 不使用"当然""非常好""很棒的问题"等讨好性开场白
+
+【记忆使用】
+- 记忆库信息用于校准判断角度，不在回复中点名举例
+- 不用"作为一个XXX的人"这类句式
+- 只有用户主动说"结合我的情况"时才显式调用个人背景
+- 个人信息在背后工作，不在前台表演
+
+【内容边界】
+- 不输出违反中国法律法规的内容
+- 不输出涉及政治颠覆、暴力煽动、色情、赌博的内容
+- 敏感政治话题保持客观陈述，不做倾向性评价
+- 触及边界时直接说明，并把话题引回有价值的部分
+
+【思维风格】
+- 偏好机制性分析，问"为什么"比问"是什么"更重要
+- 遇到循环论证或类比谬误直接指出
+- 不因用户语气强硬而改变立场，但认真对待新论据
+- 鼓励用户自己得出结论，而不是依赖你的结论
+`.trim();
 
 app.use(express.json());
 app.use(express.static(path.join(ROOT, 'public')));
 
-const DEFAULT_SETTINGS = { weather_enabled: true, exchange_enabled: true, gold_enabled: true, news_enabled: true, wiki_enabled: true, weekly_report_enabled: true, markdown_export: true, weekly_prompt: '你是一位宏观分析师，请对过去一周的晨报内容做横向分析，提炼本周核心趋势、值得关注的变化和下周展望，语言简练，带有分析视角。', profile: { nickname: '', status: '', interests: '', thinking_style: '', custom_instruction: '' } };
+const DEFAULT_SETTINGS = { weather_enabled: true, exchange_enabled: true, gold_enabled: true, news_enabled: true, wiki_enabled: true, weekly_report_enabled: true, markdown_export: true, weekly_prompt: '你是一位宏观分析师，请对过去一周的晨报内容做横向分析，提炼本周核心趋势、值得关注的变化和下周展望，语言简练，带有分析视角。', chat_system_prompt: '专注于宏观分析、地缘政治、前沿AI领域的深度探讨。', profile: { nickname: '', status: '', interests: '', thinking_style: '', custom_instruction: '' } };
 const MEMORY_TEMPLATE = { meta: { total_tokens: 0, soft_limit: 40000, hard_limit: 50000, last_pruned: null }, identity: [], knowledge: [], inference: [], archive: [] };
 
 const readJson = async (p, d = {}) => { try { return JSON.parse(await fs.readFile(p, 'utf-8')); } catch { return d; } };
@@ -40,6 +68,22 @@ function normalizeMemory(memory) {
 async function readMemory() { return normalizeMemory(await readJson(MEMORY_PATH, MEMORY_TEMPLATE)); }
 async function writeMemoryLatest(mutator) { const latest = await readMemory(); const out = await mutator(latest); await writeJson(MEMORY_PATH, out); return out; }
 function recalcTokens(m) { m.meta.total_tokens = [...m.knowledge, ...m.inference].filter((x) => !x.conflict).reduce((s, x) => s + (x.tokens || 0), 0); }
+function buildProfileSection(profile = {}) {
+  const lines = [];
+  if (profile.nickname) lines.push(`昵称：${profile.nickname}`);
+  if (profile.status) lines.push(`当前状态：${profile.status}`);
+  if (profile.interests) lines.push(`核心兴趣：${profile.interests}`);
+  if (profile.thinking_style) lines.push(`思维偏好：${profile.thinking_style}`);
+  if (profile.custom_instruction) lines.push(profile.custom_instruction);
+  return lines.length ? `【用户背景】\n${lines.join('\n')}` : '';
+}
+function buildMemorySection(m, matched) {
+  const lines = [];
+  for (const x of m.identity || []) lines.push(`[身份] ${x.content}`);
+  for (const x of matched.filter((x) => m.knowledge.find((k) => k.id === x.id))) lines.push(`[知识] ${x.title}：${x.content}`);
+  for (const x of matched.filter((x) => m.inference.find((k) => k.id === x.id))) lines.push(`[推断] ${x.title}：${x.content}`);
+  return lines.length ? `【相关记忆】\n${lines.join('\n')}` : '';
+}
 
 async function ensureBaseFiles() {
   for (const dir of [REPORTS_DIR, WEEKLY_DIR, MARKDOWN_DIR, CONVERSATIONS_DIR]) { await fs.mkdir(dir, { recursive: true }); const keep = path.join(dir, '.gitkeep'); try { await fs.access(keep); } catch { await fs.writeFile(keep, ''); } }
@@ -57,7 +101,7 @@ const similarity = (a, b) => { const A = kw(`${a.title} ${a.content}`); const B 
 
 async function runDailyJob() {
   console.log('开始执行晨报任务'); const settings = await readSettings(); const latestData = await fetchAllData(settings); await writeJson(LATEST_DATA_PATH, latestData);
-  const content = await callDeepSeek(settings, [{ role: 'system', content: settings.system_prompt }, { role: 'user', content: JSON.stringify(latestData) }]).catch(() => '<h1>今日晨报生成失败</h1>');
+  const content = await callDeepSeek(settings, [{ role: 'system', content: `${CONSTITUTION}\n\n${settings.system_prompt || ''}` }, { role: 'user', content: JSON.stringify(latestData) }]).catch(() => '<h1>今日晨报生成失败</h1>');
   const day = dateStr();
   const convFiles = (await fs.readdir(CONVERSATIONS_DIR)).filter((f) => f.endsWith('.json'));
   const since = Date.now() - 24 * 3600 * 1000;
@@ -79,14 +123,28 @@ app.put('/api/memory/:id', async (req, res) => { await writeMemoryLatest(async (
 app.post('/api/memory/resolve-conflict', async (req, res) => { const { id, action, merged_content } = req.body || {}; await writeMemoryLatest(async (m) => { for (const t of ['knowledge', 'inference']) { const it = m[t].find((x) => x.id === id); if (!it) continue; if (action === 'keep_new') { it.conflict = false; } if (action === 'keep_old') { it.content = (it.history || []).at(-1)?.content || it.content; it.conflict = false; } if (action === 'merge') { it.content = merged_content || it.content; it.conflict = false; } it.tokens = estimateTokens(it.content); it.date_updated = dateStr(); }
 recalcTokens(m); return m; }); res.json({ success: true }); });
 app.post('/api/memory/restore/:id', async (req, res) => { await writeMemoryLatest(async (m) => { const x = m.archive.find((i) => i.id === req.params.id); if (!x) return m; m.archive = m.archive.filter((i) => i.id !== req.params.id); (m[x.type_hint || 'knowledge'] || m.knowledge).push(x); recalcTokens(m); return m; }); res.json({ success: true }); });
+app.delete('/api/memory/:id', async (req, res) => { await writeMemoryLatest(async (m) => { for (const t of ['identity', 'knowledge', 'inference', 'archive']) m[t] = m[t].filter((x) => x.id !== req.params.id); recalcTokens(m); return m; }); res.json({ success: true }); });
+app.post('/api/memory/archive/:id', async (req, res) => { await writeMemoryLatest(async (m) => { for (const t of ['identity', 'knowledge', 'inference']) { const x = m[t].find((i) => i.id === req.params.id); if (x) { m[t] = m[t].filter((i) => i.id !== req.params.id); m.archive.push({ ...x, type_hint: t }); break; } } recalcTokens(m); return m; }); res.json({ success: true }); });
+app.post('/api/memory/prune', async (req, res) => {
+  const settings = await readSettings(); const memory = await readMemory();
+  const prompt = '你是记忆修剪助手。分析全部记忆返回修剪建议。严格返回JSON：{"suggestions":[{"id":"xxx","action":"delete/merge/archive","reason":"原因","merge_with":"另一条id（仅merge时）"}]}';
+  try {
+    const raw = await callDeepSeek(settings, [{ role: 'system', content: `${CONSTITUTION}\n\n${settings.chat_system_prompt || ''}` }, { role: 'user', content: JSON.stringify(memory) }]);
+    return res.json(JSON.parse(raw));
+  } catch {
+    console.log('修剪建议生成失败，返回空建议');
+    return res.json({ suggestions: [] });
+  }
+});
 
 app.post('/api/chat', async (req, res) => {
   const { message, conversation_id } = req.body || {}; const settings = await readSettings(); const id = conversation_id || randomUUID(); const cpath = path.join(CONVERSATIONS_DIR, `${id}.json`); const conv = await readJson(cpath, { id, messages: [] }); const m = await readMemory(); const keys = kw(message);
   const matched = [...m.knowledge, ...m.inference].filter((x) => keys.some((k) => `${x.title} ${x.content}`.toLowerCase().includes(k))).sort((a, b) => (b.importance || 0) - (a.importance || 0)).slice(0, 8);
-  const memPrompt = `【相关记忆】\n${m.identity.map((x) => `[身份] ${x.content}`).join('\n')}\n${matched.filter((x) => m.knowledge.find((k) => k.id === x.id)).map((x) => `[知识] ${x.title}：${x.content}`).join('\n')}\n${matched.filter((x) => m.inference.find((k) => k.id === x.id)).map((x) => `[推断] ${x.title}：${x.content}`).join('\n')}`;
-  const p = settings.profile; const profilePrompt = `用户信息：昵称${p.nickname}，当前状态${p.status}，核心兴趣${p.interests}，思维偏好${p.thinking_style}。${p.custom_instruction}`;
+  const memPrompt = buildMemorySection(m, matched);
+  const profilePrompt = buildProfileSection(settings.profile);
   conv.messages.push({ role: 'user', content: message, created_at: new Date().toISOString() });
-  const ai = await callDeepSeek(settings, [{ role: 'system', content: `${profilePrompt}\n${memPrompt}` }, ...conv.messages.map((x) => ({ role: x.role, content: x.content }))]);
+  const sysParts = [CONSTITUTION, profilePrompt, memPrompt, settings.chat_system_prompt || ''].filter(Boolean);
+  const ai = await callDeepSeek(settings, [{ role: 'system', content: sysParts.join('\n\n') }, ...conv.messages.map((x) => ({ role: x.role, content: x.content }))]);
   conv.messages.push({ role: 'assistant', content: ai, created_at: new Date().toISOString() }); conv.updated_at = new Date().toISOString(); conv.messages = conv.messages.slice(-50); await writeJson(cpath, conv); res.json({ conversation_id: id, reply: ai });
 });
 
