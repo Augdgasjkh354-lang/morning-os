@@ -1,0 +1,6 @@
+node_modules/
+settings.json
+memory.json
+conversations/
+reports/
+latest-data.json
