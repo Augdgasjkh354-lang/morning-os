@@ -28,5 +28,7 @@
     "thinking_style": "",
     "custom_instruction": ""
   },
-  "admin_token": ""
+  "admin_token": "",
+  "rss_enabled": false,
+  "rss_feeds": []
 }
