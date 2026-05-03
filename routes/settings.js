@@ -1,8 +1,31 @@
-const express = require('express');
-module.exports = function createSettingsRoutes({ requireAuth, readSettings, writeJson, SETTINGS_PATH, getSafeSettings, maskKey }) {
-  const router = express.Router();
-  router.get('/api/settings', requireAuth, async (req, res) => { const settings = await readSettings(); const safe = getSafeSettings(settings); res.json({ ...safe, deepseek_api_key: maskKey(settings.deepseek_api_key), news_api_key: maskKey(settings.news_api_key), openweather_api_key: maskKey(settings.openweather_api_key), exchangerate_api_key: maskKey(settings.exchangerate_api_key), gold_api_key: maskKey(settings.gold_api_key), bark_token: maskKey(settings.bark_token) }); });
-  router.post('/api/settings', requireAuth, async (req, res) => { const current = await readSettings(); const incoming = { ...(req.body || {}) }; delete incoming.admin_token; await writeJson(SETTINGS_PATH, { ...current, ...incoming, admin_token: current.admin_token || '', profile: { ...current.profile, ...((incoming || {}).profile || {}) } }); res.json({ success: true }); });
-  router.post('/api/admin-token', requireAuth, async (req, res) => { const current = await readSettings(); const token = String((req.body || {}).token || ''); await writeJson(SETTINGS_PATH, { ...current, admin_token: token, profile: { ...current.profile } }); res.json({ success: true }); });
-  return router;
-};
+const router = require('express').Router();
+const { requireAuth } = require('../middleware/auth');
+const { getUserSettings, saveUserSettings } = require('../lib/userData');
+
+function getSafeSettings(settings = {}) {
+  const { deepseek_api_key, news_api_key, openweather_api_key, exchangerate_api_key, gold_api_key, bark_token, admin_token, ...safe } = settings;
+  return safe;
+}
+
+router.get('/', requireAuth, async (req, res) => {
+  const s = await getUserSettings(req.user.userId);
+  res.json(getSafeSettings(s));
+});
+
+router.post('/', requireAuth, async (req, res) => {
+  const current = await getUserSettings(req.user.userId);
+  const incoming = req.body || {};
+  delete incoming.admin_token;
+  await saveUserSettings(req.user.userId, { ...current, ...incoming, profile: { ...(current.profile || {}), ...((incoming || {}).profile || {}) } });
+  res.json({ success: true });
+});
+
+router.post('/admin-token', requireAuth, async (req, res) => {
+  res.status(410).json({ error: '多用户系统不再支持管理令牌设置' });
+});
+
+router.get('/search-city', requireAuth, async (req, res) => {
+  res.json({ success: true, cities: [] });
+});
+
+module.exports = router;
