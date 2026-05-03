@@ -3,16 +3,6 @@ const path = require('path');
 const cors = require('cors');
 const { initSystem } = require('./lib/users');
 
-const authRoutes = require('./routes/auth');
-const inviteRoutes = require('./routes/invites');
-const adminRoutes = require('./routes/admin');
-const chatRoutes = require('./routes/chat');
-const tasksRoutes = require('./routes/tasks');
-const memoryRoutes = require('./routes/memory');
-const reportRoutes = require('./routes/report');
-const researchRoutes = require('./routes/research');
-const settingsRoutes = require('./routes/settings');
-const conversationsRoutes = require('./routes/conversations');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,16 +11,16 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public/login.html')));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/invites', inviteRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/chat', chatRoutes);
-app.use('/api/tasks', tasksRoutes);
-app.use('/api/memory', memoryRoutes);
-app.use('/api/research', researchRoutes);
-app.use('/api/settings', settingsRoutes);
-app.use('/api/conversations', conversationsRoutes);
-app.use('/', reportRoutes);
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/invites', require('./routes/invites'));
+app.use('/api/admin', require('./routes/admin'));
+app.use('/api/chat', require('./routes/chat'));
+app.use('/api/tasks', require('./routes/tasks'));
+app.use('/api/memory', require('./routes/memory'));
+app.use('/api/research', require('./routes/research'));
+app.use('/api/settings', require('./routes/settings'));
+app.use('/api/conversations', require('./routes/conversations'));
+app.use('/', require('./routes/report'));
 
 app.listen(PORT, async () => {
   await initSystem();
