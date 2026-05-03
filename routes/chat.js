@@ -7,6 +7,8 @@ const { requireAuth } = require('../middleware/auth');
 const { getUserMemory, saveUserMemory, getUserSettings, getUserConversationPath } = require('../lib/userData');
 const { summarizeConversation } = require('../lib/extractor');
 const { CONSTITUTION } = require('../lib/reportGenerator');
+const { runAgentLoop } = require('../lib/agentExecutor');
+const { trackInteraction } = require('../lib/behaviorTracker');
 
 function extractKeywords(text = '') {
   return [...new Set(String(text).toLowerCase().split(/[\s,.;!?，。！？；：、“”"'（）()\[\]{}]+/).filter((x) => x.length > 1))];
@@ -30,8 +32,26 @@ router.post('/', requireAuth, async (req, res) => {
   let conv = { messages: [] };
   try { conv = JSON.parse(await fs.readFile(convPath, 'utf8')); } catch (e) {}
   const messages = [...(conv.messages || []), { role: 'user', content: message, created_at: new Date().toISOString() }];
-  const response = await axios.post('https://api.deepseek.com/v1/chat/completions', { model: 'deepseek-chat', max_tokens: 1000, messages: [{ role: 'system', content: systemPrompt }, ...messages.map((m) => ({ role: m.role, content: m.content }))] }, { headers: { Authorization: `Bearer ${settings.deepseek_api_key}`, 'Content-Type': 'application/json' } });
-  const reply = response.data.choices[0].message.content;
+  let reply = '';
+  let autoActions = [];
+  let usedTools = [];
+  try {
+    if (settings.agent_enabled === false) {
+      const response = await axios.post('https://api.deepseek.com/v1/chat/completions', { model: 'deepseek-chat', max_tokens: 1000, messages: [{ role: 'system', content: systemPrompt }, ...messages.map((m) => ({ role: m.role, content: m.content }))] }, { headers: { Authorization: `Bearer ${settings.deepseek_api_key}`, 'Content-Type': 'application/json' } });
+      reply = response.data.choices[0].message.content;
+    } else {
+      const result = await runAgentLoop(messages.map(m => ({ role: m.role, content: m.content })), systemPrompt, userId, settings);
+      reply = result.reply;
+      autoActions = result.autoActions || [];
+      usedTools = (result.usedTools || []).map(t => t.name);
+    }
+  } catch (e) {
+    console.log('Agent调用失败，降级普通回复：', e.message);
+    const response = await axios.post('https://api.deepseek.com/v1/chat/completions', { model: 'deepseek-chat', max_tokens: 1000, messages: [{ role: 'system', content: systemPrompt }, ...messages.map((m) => ({ role: m.role, content: m.content }))] }, { headers: { Authorization: `Bearer ${settings.deepseek_api_key}`, 'Content-Type': 'application/json' } });
+    reply = response.data.choices[0].message.content;
+  }
+  trackInteraction(userId, { type: 'chat_message', meta: { keywords } }).catch(() => {});
+
   const usedMemoryIds = [...identity, ...matched].map((m) => m.id);
   for (const m of [...identity, ...matched]) { m.use_count = (m.use_count || 0) + 1; m.last_used_at = new Date().toISOString().split('T')[0]; }
   await saveUserMemory(userId, memory);
@@ -48,7 +68,7 @@ router.post('/', requireAuth, async (req, res) => {
     conv.memory_summary_pending = true;
     await fs.writeFile(convPath, JSON.stringify(conv, null, 2));
   }
-  res.json({ conversation_id: convId, reply, used_memories: [...identity, ...matched].map((m) => ({ id: m.id, title: m.title, type: m.type, relevance_score: 1.0 })) });
+  res.json({ conversation_id: convId, reply, used_memories: [...identity, ...matched].map((m) => ({ id: m.id, title: m.title, type: m.type })), auto_actions: autoActions, used_tools: usedTools });
 });
 
 router.post('/summarize', requireAuth, async (req, res) => {

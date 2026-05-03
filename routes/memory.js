@@ -4,6 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { getUserMemory, saveUserMemory, getUserSettings } = require('../lib/userData');
 const { dateStr, estimateTokens, recalcTokens } = require('../lib/memoryManager');
 const { sendBark } = require('../lib/barkPush');
+const { trackInteraction } = require('../lib/behaviorTracker');
 
 const TIMEZONE = 'Asia/Shanghai';
 
@@ -21,6 +22,7 @@ router.post('/', requireAuth, async (req, res) => {
     await sendBark(s.bark_token, '记忆库已达软上限，建议进行AI修剪');
   }
   await saveUserMemory(req.user.userId, m);
+  trackInteraction(req.user.userId, { type: 'memory_added', meta: { id: item.id, title: item.title } }).catch(() => {});
   res.json({ success: true });
 });
 router.put('/:id', requireAuth, async (req, res) => { const m = await getUserMemory(req.user.userId); for (const t of ['identity', 'knowledge', 'inference', 'archive']) m[t] = (m[t] || []).map((i) => i.id === req.params.id ? { ...i, ...req.body, date_updated: dateStr(TIMEZONE) } : i); recalcTokens(m); await saveUserMemory(req.user.userId, m); res.json({ success: true }); });

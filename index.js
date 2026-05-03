@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const { initSystem } = require('./lib/users');
+const { ensureDataDirs } = require('./lib/userData');
 
 
 const app = express();
@@ -20,9 +21,12 @@ app.use('/api/memory', require('./routes/memory'));
 app.use('/api/research', require('./routes/research'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/conversations', require('./routes/conversations'));
+app.use('/api/portrait', require('./routes/portrait'));
+app.use('/api/verify', require('./routes/verify'));
 app.use('/', require('./routes/report'));
 
 app.listen(PORT, async () => {
+  await ensureDataDirs();
   await initSystem();
   console.log(`服务已启动，端口：${PORT}`);
 });
