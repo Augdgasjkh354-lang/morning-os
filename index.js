@@ -1,8 +1,8 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
-const { initSystem } = require('./lib/users');
-const { ensureDataDirs } = require('./lib/userData');
+const { initDB } = require('./lib/dbInit');
+const { initAdminUser } = require('./lib/users');
 
 
 const app = express();
@@ -25,8 +25,12 @@ app.use('/api/portrait', require('./routes/portrait'));
 app.use('/api/verify', require('./routes/verify'));
 app.use('/', require('./routes/report'));
 
-app.listen(PORT, async () => {
-  await ensureDataDirs();
-  await initSystem();
-  console.log(`服务已启动，端口：${PORT}`);
-});
+(async () => {
+  try {
+    await initDB();
+    await initAdminUser();
+    app.listen(PORT, () => console.log(`服务已启动，端口：${PORT}`));
+  } catch (error) {
+    console.error('服务启动失败', error.message);
+  }
+})();

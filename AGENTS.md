@@ -65,3 +65,10 @@ Railway 生产环境必须设置：
 每次提交说明用中文，格式：
 [类型] 简短描述
 类型：修复/新增/重构/优化
+
+
+## 数据存储规范
+所有数据读写必须通过 lib/userData.js 或 lib/users.js 的数据库函数。
+禁止直接读写任何 .json 文件。
+数据库连接通过 lib/db.js 的 query 函数执行。
+环境变量 DATABASE_URL 必须在 Railway 中配置。
