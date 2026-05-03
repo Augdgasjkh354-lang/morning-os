@@ -5,6 +5,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 const { getUserMemory, saveUserMemory, getUserSettings, getUserConversationPath } = require('../lib/userData');
+const { summarizeConversation } = require('../lib/extractor');
 const { CONSTITUTION } = require('../lib/reportGenerator');
 
 function extractKeywords(text = '') {
@@ -50,6 +51,13 @@ router.post('/', requireAuth, async (req, res) => {
   res.json({ conversation_id: convId, reply, used_memories: [...identity, ...matched].map((m) => ({ id: m.id, title: m.title, type: m.type, relevance_score: 1.0 })) });
 });
 
-router.post('/summarize', requireAuth, async (req, res) => res.json({ success: true, message: '已保留接口，暂不支持自动提炼' }));
+router.post('/summarize', requireAuth, async (req, res) => {
+  const { conversation_id } = req.body;
+  if (!conversation_id) {
+    return res.status(400).json({ error: '缺少 conversation_id' });
+  }
+  const result = await summarizeConversation(req.user.userId, conversation_id);
+  res.json(result);
+});
 
 module.exports = router;
