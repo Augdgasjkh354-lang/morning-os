@@ -1,7 +1,7 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { requireAuth } = require('../middleware/auth');
-const { readUserData, writeUserData } = require('../lib/userData');
+const { readUserData, writeUserData, getUserSettings } = require('../lib/userData');
 const { extractFromConversation } = require('../lib/extractor');
 const router = express.Router();
 router.use(requireAuth);
@@ -15,5 +15,5 @@ router.post('/:id/move', async(req,res)=>{ const d=await get(req.user.userId); c
 router.post('/today', async(req,res)=>{ const d=await get(req.user.userId); let id=req.body?.id; if(!id){const t={id:`task_${randomUUID().slice(0,8)}`,title:req.body?.title||'今日主任务',status:'todo'}; d.tasks.push(t); id=t.id;} d.today_task_id=id; await writeUserData(req.user.userId,'tasks.json',d); res.json({success:true});});
 router.get('/today', async(req,res)=>{ const d=await get(req.user.userId); res.json({task:d.tasks.find(x=>x.id===d.today_task_id)||null});});
 router.post('/confirm-inbox/:id', async(req,res)=>{ const d=await get(req.user.userId); const x=d.inbox.find(i=>i.id===req.params.id); if(!x) return res.status(404).json({error:'任务不存在'}); d.inbox=d.inbox.filter(i=>i.id!==x.id); d.tasks.push({...x,status:'todo'}); await writeUserData(req.user.userId,'tasks.json',d); res.json({success:true});});
-router.post('/extract', async(req,res)=>{ const r=await extractFromConversation(req.user.userId, req.body?.conversation||[], {source_type:'conversation'}); res.json(r);});
+router.post('/extract', async(req,res)=>{ const settings = await getUserSettings(req.user.userId); const result = await extractFromConversation(settings, req.body?.conversation || [], { source_type: 'conversation', userId: req.user.userId }); res.json(result);});
 module.exports = router;
