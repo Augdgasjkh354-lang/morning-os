@@ -2,18 +2,37 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const { initSystem } = require('./lib/users');
-const { requireAuth } = require('./middleware/auth');
-const { getUserSettings, saveUserSettings, getUserMemory, saveUserMemory, getUserTasks, saveUserTasks, getUserResearch, saveUserResearch } = require('./lib/userData');
-const app = express(); const PORT = process.env.PORT || 3000;
-app.use(cors()); app.use(express.json()); app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (req,res)=>res.sendFile(path.join(__dirname,'public/login.html')));
-app.use(require('./routes/auth')()); app.use(require('./routes/invites')()); app.use(require('./routes/admin')());
-app.get('/api/auth/me', requireAuth, async(req,res)=>res.json(req.user));
-app.get('/api/settings', requireAuth, async(req,res)=>res.json(await getUserSettings(req.user.userId)));
-app.post('/api/settings', requireAuth, async(req,res)=>{await saveUserSettings(req.user.userId, req.body||{}); res.json({success:true});});
-app.get('/api/memory', requireAuth, async(req,res)=>res.json(await getUserMemory(req.user.userId)));
-app.post('/api/memory', requireAuth, async(req,res)=>{const d=await getUserMemory(req.user.userId); d.knowledge=d.knowledge||[]; d.knowledge.push(req.body||{}); await saveUserMemory(req.user.userId,d); res.json({success:true});});
-app.get('/api/tasks', requireAuth, async(req,res)=>res.json(await getUserTasks(req.user.userId)));
-app.post('/api/tasks', requireAuth, async(req,res)=>{const d=await getUserTasks(req.user.userId); d.tasks=d.tasks||[]; d.tasks.push(req.body||{}); await saveUserTasks(req.user.userId,d); res.json({success:true});});
-app.get('/api/research', requireAuth, async(req,res)=>res.json(await getUserResearch(req.user.userId)));
-app.listen(PORT, async()=>{ await initSystem(); console.log(`服务已启动，端口：${PORT}`); });
+
+const authRoutes = require('./routes/auth');
+const inviteRoutes = require('./routes/invites');
+const adminRoutes = require('./routes/admin');
+const chatRoutes = require('./routes/chat');
+const tasksRoutes = require('./routes/tasks');
+const memoryRoutes = require('./routes/memory');
+const reportRoutes = require('./routes/report');
+const researchRoutes = require('./routes/research');
+const settingsRoutes = require('./routes/settings');
+const conversationsRoutes = require('./routes/conversations');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public/login.html')));
+
+app.use('/api/auth', authRoutes);
+app.use('/api/invites', inviteRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/tasks', tasksRoutes);
+app.use('/api/memory', memoryRoutes);
+app.use('/api/research', researchRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/conversations', conversationsRoutes);
+app.use('/', reportRoutes);
+
+app.listen(PORT, async () => {
+  await initSystem();
+  console.log(`服务已启动，端口：${PORT}`);
+});
